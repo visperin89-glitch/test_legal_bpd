@@ -1,5 +1,6 @@
 Правила роботи з проєктом:
 
 1. При додаванні нових тестів із `.docx` файлів завжди створюй новий файл `data/mod_<id>.js` (формат: `window.QUIZ_MODULES = window.QUIZ_MODULES || {}; window.QUIZ_MODULES['<id>'] = [ ... ];`) та оновлюй `data/manifest.js` (додавай метадані модуля з `id`, `title`, `icon`, `color`, `bgColor`, `isHidden`, `questionCount`, `file`). Не записуй питання в `index.html`.
-2. Після будь-яких змін у файлах проєкту обов'язково автоматично виконуй у терміналі:
+2. Під час створення нових файлів `data/mod_<id>.js` із `.docx`-документів завжди зберігай питання у захищеному форматі `{ question, options: [...], ansHash, expEnc }` із використанням ключа `BPD_LEGAL_2026_SECURE` (`hashAnswer` та `encodeExplanation` з `index.html`). Категорично заборонено записувати у файли `data/mod_*.js` відкриті поля `correct`, `isCorrect`, `explanation` та `rationale`.
+3. Після будь-яких змін у файлах проєкту обов'язково автоматично виконуй у терміналі:
    git add . && git commit -m "Оновлення модулів тестування" && git push origin main

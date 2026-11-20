@@ -110,6 +110,94 @@
         const MAX_EXAM_QUESTIONS = 20;
         const ADMIN_PAGE_SIZE = 20;
 
+        const BPD_SECRET_SALT = "BPD_LEGAL_2026_SECURE";
+        const ADMIN_PASS_HASH = "aa108b4665f01285";
+
+        const computeHash = (rawString) => {
+            const input = String(rawString ?? '') + BPD_SECRET_SALT;
+            const bytes = new TextEncoder().encode(input);
+            let h1 = 0x811c9dc5;
+            let h2 = 0x9e3779b9;
+            for (let i = 0; i < bytes.length; i++) {
+                const b = bytes[i];
+                h1 ^= b;
+                h1 = Math.imul(h1, 0x01000193) >>> 0;
+                h2 ^= (b + ((i * 31) & 0xff)) & 0xff;
+                h2 = Math.imul(h2, 0x85ebca6b) >>> 0;
+                h2 = ((h2 << 13) | (h2 >>> 19)) >>> 0;
+            }
+            h1 ^= h1 >>> 16;
+            h1 = Math.imul(h1, 0x85ebca6b) >>> 0;
+            h1 ^= h1 >>> 13;
+            h1 = Math.imul(h1, 0xc2b2ae35) >>> 0;
+            h1 ^= h1 >>> 16;
+
+            h2 ^= h2 >>> 16;
+            h2 = Math.imul(h2, 0xc2b2ae35) >>> 0;
+            h2 ^= h2 >>> 13;
+            h2 = Math.imul(h2, 0x85ebca6b) >>> 0;
+            h2 ^= h2 >>> 16;
+
+            return (h1 >>> 0).toString(16).padStart(8, '0') + (h2 >>> 0).toString(16).padStart(8, '0');
+        };
+
+        const hashAnswer = (questionText, optionText) => {
+            return computeHash(String(questionText ?? '').trim() + "::" + String(optionText ?? '').trim());
+        };
+
+        const encodeExplanation = (text) => {
+            const str = String(text ?? '');
+            if (!str) return '';
+            const encoder = new TextEncoder();
+            const dataBytes = encoder.encode(str);
+            const keyBytes = encoder.encode(BPD_SECRET_SALT);
+            const xored = new Uint8Array(dataBytes.length);
+            for (let i = 0; i < dataBytes.length; i++) {
+                xored[i] = dataBytes[i] ^ keyBytes[i % keyBytes.length];
+            }
+            let binary = '';
+            for (let i = 0; i < xored.length; i++) {
+                binary += String.fromCharCode(xored[i]);
+            }
+            return btoa(binary);
+        };
+
+        const decodeExplanation = (encodedStr) => {
+            const str = String(encodedStr ?? '');
+            if (!str) return '';
+            const trimmed = str.trim();
+            if (trimmed.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(trimmed)) {
+                return str;
+            }
+            try {
+                const binary = atob(trimmed);
+                const encoder = new TextEncoder();
+                const keyBytes = encoder.encode(BPD_SECRET_SALT);
+                const decodedBytes = new Uint8Array(binary.length);
+                for (let i = 0; i < binary.length; i++) {
+                    decodedBytes[i] = binary.charCodeAt(i) ^ keyBytes[i % keyBytes.length];
+                }
+                const result = new TextDecoder('utf-8', { fatal: true }).decode(decodedBytes);
+                if (/[\x00-\x08\x0B\x0C\x0E-\x1F]/.test(result)) {
+                    return str;
+                }
+                return result;
+            } catch (e) {
+                return str;
+            }
+        };
+
+        const findCorrectOptionIndex = (questionText, options, ansHash) => {
+            if (!Array.isArray(options) || !ansHash) return -1;
+            return options.findIndex(opt => hashAnswer(questionText, opt) === ansHash);
+        };
+
+        window.BPD_SECRET_SALT = BPD_SECRET_SALT;
+        window.computeHash = computeHash;
+        window.hashAnswer = hashAnswer;
+        window.encodeExplanation = encodeExplanation;
+        window.decodeExplanation = decodeExplanation;
+
         window.QUIZ_MODULES = window.QUIZ_MODULES || {};
         const moduleScriptPromises = new Map();
 
@@ -156,26 +244,62 @@
                 : (Array.isArray(rawQ.answerOptions) ? rawQ.answerOptions : null);
             if (!rawOptions || rawOptions.length < 2) return null;
 
+            // Новий захищений або плоский формат з масивом рядків
+            if (rawOptions.every(opt => typeof opt === 'string')) {
+                const optionTexts = [...rawOptions];
+                let ansHash = typeof rawQ.ansHash === 'string' && rawQ.ansHash.trim() ? rawQ.ansHash.trim() : '';
+                if (!ansHash) {
+                    const rawCorrect = Number.isInteger(rawQ.correct) ? rawQ.correct : 0;
+                    const safeIdx = rawCorrect >= 0 && rawCorrect < optionTexts.length ? rawCorrect : 0;
+                    ansHash = hashAnswer(rawQ.question, optionTexts[safeIdx]);
+                }
+
+                let expEnc = '';
+                if (typeof rawQ.expEnc === 'string' && rawQ.expEnc.trim()) {
+                    expEnc = rawQ.expEnc.trim();
+                } else if (typeof rawQ.explanation === 'string' && rawQ.explanation) {
+                    expEnc = encodeExplanation(rawQ.explanation);
+                }
+
+                return {
+                    question: rawQ.question,
+                    options: optionTexts,
+                    ansHash,
+                    expEnc
+                };
+            }
+
+            // Зворотна сумісність із попереднім форматом об'єктів { text, isCorrect, rationale }
             const mappedOptions = rawOptions
-                .filter(opt => opt && typeof opt === 'object' && typeof opt.text === 'string')
-                .map(opt => ({
-                    text: opt.text,
-                    isCorrect: Boolean(opt.isCorrect),
-                    rationale: typeof opt.rationale === 'string' ? opt.rationale : ''
-                }));
+                .filter(opt => opt && typeof opt === 'object' && typeof opt.text === 'string');
 
             if (mappedOptions.length < 2) return null;
 
-            const firstCorrectIdx = mappedOptions.findIndex(o => o.isCorrect);
+            const firstCorrectIdx = mappedOptions.findIndex(o => Boolean(o.isCorrect));
             const normalizedCorrectIdx = firstCorrectIdx >= 0 ? firstCorrectIdx : 0;
+            const optionTexts = mappedOptions.map(o => o.text);
+            const rationaleText = typeof mappedOptions[normalizedCorrectIdx].rationale === 'string'
+                ? mappedOptions[normalizedCorrectIdx].rationale
+                : (typeof rawQ.explanation === 'string' ? rawQ.explanation : '');
 
             return {
                 question: rawQ.question,
-                options: mappedOptions.map((o, idx) => ({
-                    ...o,
-                    isCorrect: idx === normalizedCorrectIdx
-                }))
+                options: optionTexts,
+                ansHash: hashAnswer(rawQ.question, optionTexts[normalizedCorrectIdx]),
+                expEnc: encodeExplanation(rationaleText)
             };
+        };
+
+        const sanitizeQuestionsForExport = (questions) => {
+            return (Array.isArray(questions) ? questions : [])
+                .map(normalizeQuestion)
+                .filter(Boolean)
+                .map(q => ({
+                    question: q.question,
+                    options: [...q.options],
+                    ansHash: q.ansHash,
+                    expEnc: q.expEnc
+                }));
         };
 
         const normalizeModule = (rawMod, idx) => {
@@ -208,7 +332,7 @@
                 .map((mod, idx) => {
                     const id = mod.id.trim();
                     const preloaded = window.QUIZ_MODULES && Array.isArray(window.QUIZ_MODULES[id])
-                        ? window.QUIZ_MODULES[id]
+                        ? window.QUIZ_MODULES[id].map(normalizeQuestion).filter(Boolean)
                         : null;
                     return {
                         id,
@@ -231,7 +355,7 @@
 
             window.QUIZ_MODULES = window.QUIZ_MODULES || {};
             if (Array.isArray(window.QUIZ_MODULES[mod.id])) {
-                return Promise.resolve(window.QUIZ_MODULES[mod.id]);
+                return Promise.resolve(window.QUIZ_MODULES[mod.id].map(normalizeQuestion).filter(Boolean));
             }
 
             if (!mod.file) {
@@ -252,7 +376,7 @@
                     moduleScriptPromises.delete(mod.id);
                     const loaded = window.QUIZ_MODULES && window.QUIZ_MODULES[mod.id];
                     if (Array.isArray(loaded)) {
-                        resolve(loaded);
+                        resolve(loaded.map(normalizeQuestion).filter(Boolean));
                     } else {
                         script.remove();
                         reject(new Error(`Модуль "${mod.id}" не містить коректних даних.`));
@@ -324,6 +448,10 @@
 
         // Мемоізована картка питання в Адмін-панелі для швидкого рендеру на великих базах (5000+ питань)
         const AdminQuestionCard = memo(({ q, qIdx, modIdx, onUpdate, onDeleteRequest }) => {
+            const foundCorrectIdx = findCorrectOptionIndex(q.question, q.options, q.ansHash);
+            const correctIdx = foundCorrectIdx >= 0 ? foundCorrectIdx : 0;
+            const decodedExplanation = useMemo(() => decodeExplanation(q.expEnc), [q.expEnc]);
+
             return (
                 <div className="bg-white dark:bg-[#131E32] p-4 sm:p-5 rounded-md border border-gray-200 dark:border-slate-700 shadow-sm relative group transition-colors">
                     <button
@@ -345,34 +473,37 @@
                         />
                     </div>
                     <div className="grid grid-cols-1 gap-3">
-                        {q.options.map((opt, oIdx) => (
-                            <div key={oIdx} className={`p-3 rounded border ${opt.isCorrect ? 'border-emerald-300 bg-emerald-50 dark:border-emerald-700/70 dark:bg-emerald-950/40' : 'border-gray-200 bg-gray-50 dark:border-slate-700 dark:bg-[#0B1320]/60'} flex gap-3 items-start`}>
-                                <input
-                                    type="radio"
-                                    name={`correct-${modIdx}-${qIdx}`}
-                                    checked={opt.isCorrect}
-                                    onChange={() => onUpdate(modIdx, qIdx, 'isCorrect', true, oIdx)}
-                                    className="mt-1.5 w-4 h-4 accent-[#133863] dark:accent-[#F7D622] shrink-0"
-                                />
-                                <div className="flex-1 space-y-2 min-w-0">
+                        {q.options.map((optText, oIdx) => {
+                            const isOptCorrect = oIdx === correctIdx;
+                            return (
+                                <div key={oIdx} className={`p-3 rounded border ${isOptCorrect ? 'border-emerald-300 bg-emerald-50 dark:border-emerald-700/70 dark:bg-emerald-950/40' : 'border-gray-200 bg-gray-50 dark:border-slate-700 dark:bg-[#0B1320]/60'} flex gap-3 items-start`}>
                                     <input
-                                        className="w-full p-2 border border-gray-300 dark:border-slate-600 rounded bg-white dark:bg-[#0B1320] text-slate-800 dark:text-white text-sm focus:border-[#133863] dark:focus:border-[#F7D622] outline-none transition-colors font-medium"
-                                        value={opt.text}
-                                        placeholder="Текст відповіді"
-                                        onChange={(e) => onUpdate(modIdx, qIdx, 'text', e.target.value, oIdx)}
+                                        type="radio"
+                                        name={`correct-${modIdx}-${qIdx}`}
+                                        checked={isOptCorrect}
+                                        onChange={() => onUpdate(modIdx, qIdx, 'correct', oIdx)}
+                                        className="mt-1.5 w-4 h-4 accent-[#133863] dark:accent-[#F7D622] shrink-0"
                                     />
-                                    {opt.isCorrect && (
-                                        <textarea
-                                            className="w-full p-2 border border-emerald-300 dark:border-emerald-700 rounded bg-white dark:bg-[#0B1320] text-slate-800 dark:text-slate-100 text-xs focus:border-emerald-500 outline-none resize-none transition-colors font-medium"
-                                            value={opt.rationale}
-                                            placeholder="Норма закону та юридичне обґрунтування"
-                                            rows="2"
-                                            onChange={(e) => onUpdate(modIdx, qIdx, 'rationale', e.target.value, oIdx)}
+                                    <div className="flex-1 space-y-2 min-w-0">
+                                        <input
+                                            className="w-full p-2 border border-gray-300 dark:border-slate-600 rounded bg-white dark:bg-[#0B1320] text-slate-800 dark:text-white text-sm focus:border-[#133863] dark:focus:border-[#F7D622] outline-none transition-colors font-medium"
+                                            value={optText}
+                                            placeholder="Текст відповіді"
+                                            onChange={(e) => onUpdate(modIdx, qIdx, 'optionText', e.target.value, oIdx)}
                                         />
-                                    )}
+                                        {isOptCorrect && (
+                                            <textarea
+                                                className="w-full p-2 border border-emerald-300 dark:border-emerald-700 rounded bg-white dark:bg-[#0B1320] text-slate-800 dark:text-slate-100 text-xs focus:border-emerald-500 outline-none resize-none transition-colors font-medium"
+                                                value={decodedExplanation}
+                                                placeholder="Норма закону та юридичне обґрунтування"
+                                                rows="2"
+                                                onChange={(e) => onUpdate(modIdx, qIdx, 'explanation', e.target.value)}
+                                            />
+                                        )}
+                                    </div>
                                 </div>
-                            </div>
-                        ))}
+                            );
+                        })}
                     </div>
                 </div>
             );
@@ -414,6 +545,7 @@
             const [activeScreen, setActiveScreen] = useState('menu'); 
             const [currentQuizMeta, setCurrentQuizMeta] = useState(null);
             const [sessionQuestions, setSessionQuestions] = useState([]);
+            const [sessionResults, setSessionResults] = useState([]);
             const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
             const [userAnswers, setUserAnswers] = useState([]); 
             const [score, setScore] = useState(0);
@@ -547,21 +679,36 @@
                 return { questionsById, failedIds };
             }, []);
 
-            // Античит: блокування контекстного меню, копіювання/вставки та гарячих клавіш (включно з кириличною розкладкою)
+            // Античит: блокування контекстного меню, копіювання/вставки, інспектора та гарячих клавіш (включно з кириличною розкладкою)
             useEffect(() => {
                 if (activeScreen !== 'quiz') return;
 
                 const handleContextMenu = (e) => e.preventDefault();
                 const handleClipboard = (e) => e.preventDefault();
                 const handleKeyDown = (e) => {
+                    const key = (e.key || '').toLowerCase();
+                    const code = e.code || '';
+
+                    if (key === 'f12' || code === 'F12') {
+                        e.preventDefault();
+                        return;
+                    }
+
                     if (e.ctrlKey || e.metaKey) {
-                        const key = (e.key || '').toLowerCase();
-                        const code = e.code || '';
                         if (
-                            ['c', 'v', 'a', 'p', 's'].includes(key) ||
-                            ['KeyC', 'KeyV', 'KeyA', 'KeyP', 'KeyS'].includes(code)
+                            ['c', 'v', 'a', 'p', 's', 'u'].includes(key) ||
+                            ['KeyC', 'KeyV', 'KeyA', 'KeyP', 'KeyS', 'KeyU'].includes(code)
                         ) {
                             e.preventDefault();
+                            return;
+                        }
+                        if (e.shiftKey || e.altKey) {
+                            if (
+                                ['i', 'j', 'c', 'u'].includes(key) ||
+                                ['KeyI', 'KeyJ', 'KeyC', 'KeyU'].includes(code)
+                            ) {
+                                e.preventDefault();
+                            }
                         }
                     }
                 };
@@ -679,16 +826,18 @@
                 const maxQuestions = Math.min(MAX_EXAM_QUESTIONS, shuffledPool.length);
                 const selectedQuestions = shuffledPool.slice(0, maxQuestions);
 
-                const questionsWithShuffledOptions = selectedQuestions.map(q => {
-                    const shuffledOptions = shuffleArray(q.options);
-                    const foundIdx = shuffledOptions.findIndex(o => o.isCorrect);
-                    return { ...q, options: shuffledOptions, correctIndex: foundIdx >= 0 ? foundIdx : 0 };
-                });
+                const questionsWithShuffledOptions = selectedQuestions.map(q => ({
+                    question: q.question,
+                    options: shuffleArray(q.options),
+                    ansHash: q.ansHash,
+                    expEnc: q.expEnc
+                }));
 
                 isFinishingRef.current = false;
                 setSyncStatus('idle');
                 setUserName(trimmedName);
                 setCurrentQuizMeta({ id: pendingQuizId, title: title });
+                setSessionResults([]);
                 setSessionQuestions(questionsWithShuffledOptions);
                 setUserAnswers(new Array(selectedQuestions.length).fill(null));
                 setCurrentQuestionIndex(0);
@@ -759,15 +908,33 @@
 
                 let finalScore = 0;
                 const errorsData = [];
+                const resolvedDossier = sessionQuestions.map((q, idx) => {
+                    const uAnsIdx = userAnswers[idx];
+                    const skipped = uAnsIdx === null || uAnsIdx === undefined;
+                    const selectedOptionText = skipped ? '' : (q.options[uAnsIdx] || '');
+                    const isCorrect = !skipped && hashAnswer(q.question, selectedOptionText) === q.ansHash;
 
-                userAnswers.forEach((ans, idx) => {
-                    if (ans === sessionQuestions[idx].correctIndex) {
+                    if (isCorrect) {
                         finalScore++;
                     } else {
-                        errorsData.push(idx + 1); 
+                        errorsData.push(idx + 1);
                     }
+
+                    const correctIdx = findCorrectOptionIndex(q.question, q.options, q.ansHash);
+                    const correctText = correctIdx >= 0 ? q.options[correctIdx] : '';
+                    const explanation = decodeExplanation(q.expEnc);
+
+                    return {
+                        question: q.question,
+                        userAnswerText: skipped ? "Не надано відповіді (час вичерпано)" : selectedOptionText,
+                        skipped,
+                        isCorrect,
+                        correctText,
+                        explanation
+                    };
                 });
 
+                setSessionResults(resolvedDossier);
                 setScore(finalScore);
                 const percentage = Math.round((finalScore / sessionQuestions.length) * 100);
 
@@ -802,12 +969,13 @@
                 setActiveScreen('menu');
                 setCurrentQuizMeta(null);
                 setSessionQuestions([]);
+                setSessionResults([]);
                 setUserAnswers([]);
                 setSyncStatus('idle');
             };
 
             const handleLogin = () => {
-                if (password === 'admin') {
+                if (computeHash(password.trim()) === ADMIN_PASS_HASH) {
                     setIsAdmin(true);
                     setShowLogin(false);
                 } else {
@@ -870,27 +1038,38 @@
                     const newData = [...prevData];
                     const targetMod = { ...newData[modIdx] };
                     const newQuestions = [...targetMod.questions];
-                    const targetQ = { ...newQuestions[qIdx] };
+                    const oldQ = newQuestions[qIdx];
+                    const prevCorrectIdx = findCorrectOptionIndex(oldQ.question, oldQ.options, oldQ.ansHash);
+                    const safeCorrectIdx = prevCorrectIdx >= 0 ? prevCorrectIdx : 0;
 
-                    if (optIdx !== null) {
-                        const newOptions = [...targetQ.options];
-                        if (field === 'isCorrect') {
-                            targetQ.options = newOptions.map((o, idx) => ({
-                                ...o,
-                                isCorrect: idx === optIdx
-                            }));
-                        } else {
-                            newOptions[optIdx] = {
-                                ...newOptions[optIdx],
-                                [field]: value
-                            };
-                            targetQ.options = newOptions;
+                    let nextQuestion = oldQ.question;
+                    let nextOptions = [...oldQ.options];
+                    let nextAnsHash = oldQ.ansHash;
+                    let nextExpEnc = oldQ.expEnc;
+
+                    if (field === 'question') {
+                        nextQuestion = value;
+                        nextAnsHash = hashAnswer(nextQuestion, nextOptions[safeCorrectIdx] ?? '');
+                    } else if (field === 'optionText' && optIdx !== null) {
+                        nextOptions[optIdx] = value;
+                        if (optIdx === safeCorrectIdx) {
+                            nextAnsHash = hashAnswer(nextQuestion, value);
                         }
-                    } else {
-                        targetQ[field] = value;
+                    } else if (field === 'correct') {
+                        const newIdx = Number(value);
+                        if (newIdx >= 0 && newIdx < nextOptions.length) {
+                            nextAnsHash = hashAnswer(nextQuestion, nextOptions[newIdx]);
+                        }
+                    } else if (field === 'explanation') {
+                        nextExpEnc = encodeExplanation(value);
                     }
 
-                    newQuestions[qIdx] = targetQ;
+                    newQuestions[qIdx] = {
+                        question: nextQuestion,
+                        options: nextOptions,
+                        ansHash: nextAnsHash,
+                        expEnc: nextExpEnc
+                    };
                     targetMod.questions = newQuestions;
                     newData[modIdx] = targetMod;
                     return newData;
@@ -902,21 +1081,24 @@
             }, []);
 
             const addNewQuestion = (modIdx) => {
+                const newQuestionText = "Текст нового запитання?";
+                const newOptions = [
+                    "Варіант відповіді 1 (Правильний)",
+                    "Варіант відповіді 2",
+                    "Варіант відповіді 3",
+                    "Варіант відповіді 4"
+                ];
+                const newQuestion = {
+                    question: newQuestionText,
+                    options: newOptions,
+                    ansHash: hashAnswer(newQuestionText, newOptions[0]),
+                    expEnc: encodeExplanation("Юридичне обґрунтування норми закону")
+                };
+
                 setQuizData(prevData => {
                     if (!prevData[modIdx]) return prevData;
                     const newData = [...prevData];
-                    const nextQuestions = [
-                        {
-                            question: "Текст нового запитання?",
-                            options: [
-                                { text: "Варіант відповіді 1 (Правильний)", isCorrect: true, rationale: "Юридичне обґрунтування норми закону" },
-                                { text: "Варіант відповіді 2", isCorrect: false, rationale: "Пояснення" },
-                                { text: "Варіант відповіді 3", isCorrect: false, rationale: "Пояснення" },
-                                { text: "Варіант відповіді 4", isCorrect: false, rationale: "Пояснення" }
-                            ]
-                        },
-                        ...newData[modIdx].questions
-                    ];
+                    const nextQuestions = [newQuestion, ...newData[modIdx].questions];
                     newData[modIdx] = {
                         ...newData[modIdx],
                         questions: nextQuestions,
@@ -1050,7 +1232,8 @@
                     }
 
                     const exportPayload = currentData.map(mod => {
-                        const qs = mod.isLoaded ? mod.questions : (questionsById.get(mod.id) || []);
+                        const rawQs = mod.isLoaded ? mod.questions : (questionsById.get(mod.id) || []);
+                        const safeQs = sanitizeQuestionsForExport(rawQs);
                         return {
                             id: mod.id,
                             title: mod.title,
@@ -1058,9 +1241,9 @@
                             color: mod.color,
                             bgColor: mod.bgColor,
                             isHidden: mod.isHidden,
-                            questionCount: qs.length,
+                            questionCount: safeQs.length,
                             file: mod.file || `data/mod_${mod.id}.js`,
-                            questions: qs
+                            questions: safeQs
                         };
                     });
 
@@ -1076,6 +1259,52 @@
                     showToast("Базу тестів успішно експортовано!", "success");
                 } catch (error) {
                     showToast("Помилка під час експорту.", "error");
+                    console.error(error);
+                } finally {
+                    setIsExporting(false);
+                }
+            };
+
+            const handleExportModuleJS = async () => {
+                if (isExporting) return;
+                const currentData = quizDataRef.current;
+                const targetTabIdx = currentData[adminActiveTab] ? adminActiveTab : 0;
+                const targetMod = currentData[targetTabIdx];
+                if (!targetMod) {
+                    showToast("Модуль не вибрано.", "error");
+                    return;
+                }
+
+                setIsExporting(true);
+                try {
+                    let rawQs = targetMod.questions;
+                    if (!targetMod.isLoaded && targetMod.file) {
+                        const { questionsById, failedIds } = await ensureModulesLoaded([targetMod.id]);
+                        if (failedIds.length > 0) {
+                            showToast("Не вдалося завантажити модуль для експорту.", "error");
+                            return;
+                        }
+                        rawQs = questionsById.get(targetMod.id) || [];
+                    }
+
+                    const safeQs = sanitizeQuestionsForExport(rawQs);
+                    const fileContent =
+                        "window.QUIZ_MODULES = window.QUIZ_MODULES || {};\n" +
+                        "window.QUIZ_MODULES[" + JSON.stringify(targetMod.id) + "] = " +
+                        JSON.stringify(safeQs, null, 2) + ";\n";
+
+                    const blob = new Blob([fileContent], { type: 'application/javascript;charset=utf-8' });
+                    const url = URL.createObjectURL(blob);
+                    const downloadAnchor = document.createElement('a');
+                    downloadAnchor.setAttribute("href", url);
+                    downloadAnchor.setAttribute("download", `mod_${targetMod.id}.js`);
+                    document.body.appendChild(downloadAnchor);
+                    downloadAnchor.click();
+                    downloadAnchor.remove();
+                    setTimeout(() => URL.revokeObjectURL(url), 1000);
+                    showToast(`Захищений файл mod_${targetMod.id}.js експортовано!`, "success");
+                } catch (error) {
+                    showToast("Помилка під час експорту модуля.", "error");
                     console.error(error);
                 } finally {
                     setIsExporting(false);
@@ -1102,7 +1331,8 @@
                     const compiledManifest = [];
                     const compiledModules = {};
                     currentData.forEach(mod => {
-                        const qs = mod.isLoaded ? mod.questions : (questionsById.get(mod.id) || []);
+                        const rawQs = mod.isLoaded ? mod.questions : (questionsById.get(mod.id) || []);
+                        const safeQs = sanitizeQuestionsForExport(rawQs);
                         compiledManifest.push({
                             id: mod.id,
                             title: mod.title,
@@ -1110,10 +1340,10 @@
                             color: mod.color,
                             bgColor: mod.bgColor,
                             isHidden: mod.isHidden,
-                            questionCount: qs.length,
+                            questionCount: safeQs.length,
                             file: mod.file || `data/mod_${mod.id}.js`
                         });
-                        compiledModules[mod.id] = qs;
+                        compiledModules[mod.id] = safeQs;
                     });
 
                     const scriptContent = (scriptElement.textContent || scriptElement.innerHTML).replace(/^\n+|\s+$/g, '');
@@ -1192,22 +1422,19 @@
 
             const handleExportWord = () => {
                 try {
-                    const total = sessionQuestions.length || 1;
+                    const total = sessionResults.length || sessionQuestions.length || 1;
                     const percentage = Math.round((score / total) * 100);
                     const isPassed = percentage >= 80;
                     
                     let questionsHtml = "";
-                    sessionQuestions.forEach((q, idx) => {
-                        const uAnsIdx = userAnswers[idx];
-                        const isCorrect = uAnsIdx === q.correctIndex;
-                        const skipped = uAnsIdx === null || uAnsIdx === undefined;
-                        const userAnswerText = skipped ? "Не надано відповіді (час вичерпано)" : escapeHtml(q.options[uAnsIdx]?.text || '');
-                        const correctOption = q.options[q.correctIndex] || {};
+                    sessionResults.forEach((item, idx) => {
+                        const isCorrect = item.isCorrect;
+                        const userAnswerText = escapeHtml(item.userAnswerText);
                         
                         questionsHtml += `
                             <div style="margin-bottom: 20px; padding: 15px; border-left: 6px solid ${isCorrect ? '#10b981' : '#ef4444'}; background-color: #ffffff; border-top: 1px solid #e2e8f0; border-right: 1px solid #e2e8f0; border-bottom: 1px solid #e2e8f0;">
                                 <p style="font-size: 13pt; font-weight: bold; margin: 0 0 10px 0; color: #1e293b;">
-                                    #${idx + 1}. ${escapeHtml(q.question)}
+                                    #${idx + 1}. ${escapeHtml(item.question)}
                                 </p>
                                 <p style="margin: 0 0 8px 0; font-size: 11pt;">
                                     <strong>Ваша відповідь:</strong> 
@@ -1217,12 +1444,12 @@
                                 </p>
                                 ${!isCorrect ? `
                                 <p style="margin: 0 0 8px 0; font-size: 11pt;">
-                                    <strong>Правильна відповідь:</strong> <span style="color: #047857; font-weight: bold;">${escapeHtml(correctOption.text || '')}</span>
+                                    <strong>Правильна відповідь:</strong> <span style="color: #047857; font-weight: bold;">${escapeHtml(item.correctText || '')}</span>
                                 </p>
                                 ` : ''}
                                 <div style="margin-top: 10px; padding: 10px; background-color: #f8fafc; border-top: 1px dashed #cbd5e1; font-size: 10pt; color: #475569;">
                                     <strong style="color: #0f172a;">Обґрунтування (Норма закону):</strong><br/>
-                                    ${escapeHtml(correctOption.rationale || '')}
+                                    ${escapeHtml(item.explanation || '')}
                                 </div>
                             </div>
                         `;
@@ -1258,7 +1485,7 @@
                                     <td style="width: 15%;"><strong>Юрист:</strong></td>
                                     <td style="width: 50%; font-size: 12pt; font-weight: bold; color: #133863;">${escapeHtml(userName)}</td>
                                     <td style="width: 15%; text-align: right;"><strong>Ваш бал:</strong></td>
-                                    <td style="width: 20%; font-size: 14pt; font-weight: bold; color: #133863; text-align: right;">${score} / ${sessionQuestions.length}</td>
+                                    <td style="width: 20%; font-size: 14pt; font-weight: bold; color: #133863; text-align: right;">${score} / ${total}</td>
                                 </tr>
                                 <tr>
                                     <td><strong>Дата:</strong></td>
@@ -1326,10 +1553,10 @@
                 currentAdminQuestions.forEach((q, idx) => {
                     const matchesQuestion = (q.question || '').toLowerCase().includes(query);
                     const matchesOption = (q.options || []).some(opt =>
-                        (opt.text || '').toLowerCase().includes(query) ||
-                        (opt.rationale || '').toLowerCase().includes(query)
+                        String(opt || '').toLowerCase().includes(query)
                     );
-                    if (matchesQuestion || matchesOption) {
+                    const matchesExp = decodeExplanation(q.expEnc).toLowerCase().includes(query);
+                    if (matchesQuestion || matchesOption || matchesExp) {
                         indices.push(idx);
                     }
                 });
@@ -1563,22 +1790,26 @@
                                                 </div>
                                             )}
                                             
-                                            <div className="flex flex-col sm:flex-row gap-3 sm:gap-4 mt-6 sm:mt-8 pt-6 border-t dark:border-slate-700">
+                                            <div className="flex flex-col sm:flex-row flex-wrap gap-3 sm:gap-4 mt-6 sm:mt-8 pt-6 border-t dark:border-slate-700">
                                                 <button
                                                     type="button"
                                                     onClick={() => addNewQuestion(effectiveAdminTab)}
                                                     disabled={isCurrentAdminLoading || (!currentAdminModule.isLoaded && Boolean(currentAdminModule.file))}
-                                                    className="flex-1 py-3 px-4 border-2 border-dashed border-gray-300 dark:border-slate-600 rounded-md text-gray-600 dark:text-slate-200 text-sm font-bold hover:bg-gray-50 dark:hover:bg-[#0B1320] hover:text-[#133863] dark:hover:text-[#F7D622] disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
+                                                    className="flex-1 min-w-[200px] py-3 px-4 border-2 border-dashed border-gray-300 dark:border-slate-600 rounded-md text-gray-600 dark:text-slate-200 text-sm font-bold hover:bg-gray-50 dark:hover:bg-[#0B1320] hover:text-[#133863] dark:hover:text-[#F7D622] disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
                                                 >
                                                     <PlusIcon className="w-5 h-5 shrink-0" /> Створити питання вручну
                                                 </button>
                                                 
-                                                <label className={`flex-1 py-3 px-4 border-2 border-dashed border-emerald-300 dark:border-emerald-700 rounded-md text-emerald-700 dark:text-emerald-300 text-sm font-bold hover:bg-emerald-50 dark:hover:bg-emerald-950/40 transition-all flex items-center justify-center gap-2 ${isCurrentAdminLoading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}>
+                                                <label className={`flex-1 min-w-[200px] py-3 px-4 border-2 border-dashed border-emerald-300 dark:border-emerald-700 rounded-md text-emerald-700 dark:text-emerald-300 text-sm font-bold hover:bg-emerald-50 dark:hover:bg-emerald-950/40 transition-all flex items-center justify-center gap-2 ${isCurrentAdminLoading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}>
                                                     <UploadIcon className="w-5 h-5 shrink-0" /> Імпорт з файлу (JSON)
                                                     <input type="file" accept=".json" disabled={isCurrentAdminLoading} className="hidden" onChange={handleImportJSON} />
                                                 </label>
 
-                                                <button type="button" onClick={handleExportJSON} disabled={isExporting} className="flex-1 py-3 px-4 border-2 border-dashed border-indigo-300 dark:border-indigo-700 rounded-md text-indigo-700 dark:text-indigo-300 text-sm font-bold hover:bg-indigo-50 dark:hover:bg-indigo-950/40 disabled:opacity-50 transition-all flex items-center justify-center gap-2">
+                                                <button type="button" onClick={handleExportModuleJS} disabled={isExporting || isCurrentAdminLoading} className="flex-1 min-w-[200px] py-3 px-4 border-2 border-dashed border-amber-400 dark:border-amber-600 rounded-md text-amber-800 dark:text-amber-300 text-sm font-bold hover:bg-amber-50 dark:hover:bg-amber-950/40 disabled:opacity-50 transition-all flex items-center justify-center gap-2">
+                                                    {isExporting ? <SpinnerIcon className="w-5 h-5 shrink-0" /> : <DownloadIcon className="w-5 h-5 shrink-0" />} Експорт модуля (.js)
+                                                </button>
+
+                                                <button type="button" onClick={handleExportJSON} disabled={isExporting} className="flex-1 min-w-[200px] py-3 px-4 border-2 border-dashed border-indigo-300 dark:border-indigo-700 rounded-md text-indigo-700 dark:text-indigo-300 text-sm font-bold hover:bg-indigo-50 dark:hover:bg-indigo-950/40 disabled:opacity-50 transition-all flex items-center justify-center gap-2">
                                                     {isExporting ? <SpinnerIcon className="w-5 h-5 shrink-0" /> : <DownloadIcon className="w-5 h-5 shrink-0" />} Експортувати базу (JSON)
                                                 </button>
                                             </div>
@@ -1752,7 +1983,7 @@
                                             return (
                                                 <button type="button" key={index} onClick={() => handleOptionSelect(index)} className={`w-full text-left p-3.5 sm:p-4 rounded border transition-all flex items-start gap-3 sm:gap-4 ${isSelected ? 'border-[#133863] bg-[#eef3f8] dark:bg-[#1E3252] dark:border-[#F7D622]' : 'border-slate-200 bg-white hover:border-[#133863] dark:bg-[#131E32] dark:border-slate-700 dark:hover:border-[#F7D622]'}`}>
                                                     <div className="mt-0.5 shrink-0"><div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-colors ${isSelected ? 'border-[#133863] dark:border-[#F7D622]' : 'border-slate-300 dark:border-slate-500'}`}>{isSelected && <div className="w-2.5 h-2.5 bg-[#133863] dark:bg-[#F7D622] rounded-full"></div>}</div></div>
-                                                    <span className={`font-semibold text-sm sm:text-base md:text-lg ${isSelected ? 'text-[#133863] dark:text-white' : 'text-slate-700 dark:text-slate-200'}`}>{option.text}</span>
+                                                    <span className={`font-semibold text-sm sm:text-base md:text-lg ${isSelected ? 'text-[#133863] dark:text-white' : 'text-slate-700 dark:text-slate-200'}`}>{option}</span>
                                                 </button>
                                             );
                                         })}
@@ -1835,22 +2066,19 @@
 
                                 <h3 className="text-lg sm:text-xl font-bold text-[#133863] dark:text-white print-light-heading mb-6 uppercase tracking-wide border-l-4 border-[#F7D622] pl-3">Детальний розбір відповідей:</h3>
                                 <div className="space-y-4">
-                                    {sessionQuestions.map((q, idx) => {
-                                        const uAnsIdx = userAnswers[idx];
-                                        const isCorrect = uAnsIdx === q.correctIndex;
-                                        const skipped = uAnsIdx === null || uAnsIdx === undefined;
-                                        const correctOption = q.options[q.correctIndex] || {};
+                                    {sessionResults.map((item, idx) => {
+                                        const isCorrect = item.isCorrect;
 
                                         return (
                                             <div key={idx} className="p-4 sm:p-6 border-l-4 bg-white dark:bg-[#131E32] border-t border-r border-b border-slate-100 dark:border-slate-700 print-border print-break-inside-avoid print-light-card transition-colors" style={{ borderLeftColor: isCorrect ? '#10b981' : '#ef4444' }}>
                                                 <p className="font-bold text-base text-slate-800 dark:text-slate-100 print-light-heading mb-4 leading-relaxed">
-                                                    <span className="text-slate-400 mr-2">#{idx + 1}.</span> {q.question}
+                                                    <span className="text-slate-400 mr-2">#{idx + 1}.</span> {item.question}
                                                 </p>
                                                 
                                                 <div className="mb-3">
                                                     <span className="font-bold block text-xs uppercase mb-1 text-slate-500 dark:text-slate-400 print-light-subtext">Ваша відповідь:</span>
                                                     <p className={`font-semibold text-sm p-3 rounded ${isCorrect ? 'bg-emerald-50 text-emerald-800 border border-emerald-100 dark:bg-emerald-950/50 dark:text-emerald-300 dark:border-emerald-800/60 print-light-correct' : 'bg-red-50 text-red-800 border border-red-100 dark:bg-red-950/50 dark:text-red-300 dark:border-red-800/60 print-light-wrong'}`}>
-                                                        {skipped ? "Не надано відповіді (час вичерпано)" : q.options[uAnsIdx]?.text}
+                                                        {item.userAnswerText}
                                                         <span className="ml-2 font-black">{isCorrect ? '(✓ Вірно)' : '(✗ Помилка)'}</span>
                                                     </p>
                                                 </div>
@@ -1859,7 +2087,7 @@
                                                     <div className="mb-3">
                                                         <span className="font-bold block text-xs uppercase mb-1 text-emerald-600 dark:text-emerald-400">Правильна відповідь:</span>
                                                         <p className="font-semibold text-sm p-3 rounded bg-emerald-50 text-emerald-800 border border-emerald-100 dark:bg-emerald-950/50 dark:text-emerald-300 dark:border-emerald-800/60 print-light-correct">
-                                                            {correctOption.text}
+                                                            {item.correctText}
                                                         </p>
                                                     </div>
                                                 )}
@@ -1867,7 +2095,7 @@
                                                 <div className="mt-4 pt-3 border-t border-slate-100 dark:border-slate-700">
                                                     <span className="font-bold block text-xs uppercase mb-1 text-[#133863] dark:text-[#F7D622] print-light-heading">Обґрунтування (Норма):</span>
                                                     <p className="text-slate-600 dark:text-slate-300 print-light-subtext text-sm leading-relaxed font-medium">
-                                                        {correctOption.rationale}
+                                                        {item.explanation}
                                                     </p>
                                                 </div>
                                             </div>
