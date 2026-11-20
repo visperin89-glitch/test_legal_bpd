@@ -1246,7 +1246,7 @@
                     <body>
                         <div class="header">
                             <div style="margin-bottom: 12px;">
-                                <img src="${LOGO_COLOR_B64}" alt="Безоплатна правнича допомога" width="130" height="100" style="width: 130px; height: 100px; display: block; margin: 0 auto;" />
+                                <img src="${LOGO_COLOR_B64}" alt="Безоплатна правнича допомога" width="110" height="85" style="height: 85px; width: auto; display: block; margin: 0 auto;" />
                             </div>
                             <h1>Досьє результатів тестування</h1>
                             <h2>Тема: ${escapeHtml(currentQuizMeta?.title || '')}</h2>
@@ -1602,19 +1602,19 @@
                                         {isDarkMode ? <SunIcon className="w-6 h-6" /> : <MoonIcon className="w-6 h-6" />}
                                     </button>
                                     <div className="max-w-5xl mx-auto flex flex-col items-center relative z-10">
-                                        <div className="mb-4 p-2">
+                                        <div className="mb-5">
                                             <img
                                                 src={LOGO_WHITE_B64}
                                                 alt="Безоплатна правнича допомога"
-                                                className="h-12 w-auto object-contain mx-auto"
+                                                className="h-24 md:h-28 w-auto object-contain mx-auto"
                                             />
                                         </div>
                                         <div className="mb-4">
                                             <h1 className="text-2xl sm:text-3xl md:text-4xl font-black mb-1 tracking-wider uppercase">Система надання</h1>
                                             <h2 className="text-lg sm:text-xl md:text-2xl font-semibold tracking-wide text-emerald-100 dark:text-blue-100">безоплатної правничої допомоги</h2>
                                         </div>
-                                        <div className="w-16 h-1 bg-[#F7D622] my-3 sm:my-4 rounded"></div>
-                                        <h3 className="text-xl sm:text-2xl font-bold">Портал тестування юристів</h3>
+                                        <div className="w-16 h-1 bg-[#C7F167] my-3 sm:my-4 rounded"></div>
+                                        <h3 className="text-lg sm:text-xl md:text-2xl bg-[#C7F167] text-black font-bold px-4 py-1.5 inline-block rounded-sm">Портал тестування юристів</h3>
                                     </div>
                                 </header>
                                 
@@ -1792,16 +1792,16 @@
 
                             <div className="max-w-4xl mx-auto px-4 sm:px-6 print:px-0">
                                 <div className="text-center mb-6 sm:mb-8 border-b-[3px] border-[#133863] dark:border-[#F7D622] pb-6 sm:pb-8">
-                                    <div className="flex justify-center mb-4 p-2">
+                                    <div className="flex justify-center mb-4">
                                         <img
                                             src={LOGO_COLOR_B64}
                                             alt="Безоплатна правнича допомога"
-                                            className="h-16 sm:h-20 w-auto object-contain dark:hidden print-show-logo"
+                                            className="h-20 md:h-24 w-auto object-contain dark:hidden print-show-logo"
                                         />
                                         <img
                                             src={LOGO_WHITE_B64}
                                             alt="Безоплатна правнича допомога"
-                                            className="h-16 sm:h-20 w-auto object-contain hidden dark:block print-hide-logo"
+                                            className="h-20 md:h-24 w-auto object-contain hidden dark:block print-hide-logo"
                                         />
                                     </div>
                                     <h1 className="text-2xl sm:text-3xl font-black text-[#133863] dark:text-white print-light-heading uppercase tracking-widest mb-2">Досьє результатів тестування</h1>
