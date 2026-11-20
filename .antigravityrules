@@ -1,1 +1,5 @@
-Після кожного внесення змін у файли проєкту обов'язково виконуй у терміналі: git add . && git commit -m "Автооновлення порталу тестування" && git push origin main
+Правила роботи з проєктом:
+
+1. При додаванні нових тестів із `.docx` файлів завжди створюй новий файл `data/mod_<id>.js` (формат: `window.QUIZ_MODULES = window.QUIZ_MODULES || {}; window.QUIZ_MODULES['<id>'] = [ ... ];`) та оновлюй `data/manifest.js` (додавай метадані модуля з `id`, `title`, `icon`, `color`, `bgColor`, `isHidden`, `questionCount`, `file`). Не записуй питання в `index.html`.
+2. Після будь-яких змін у файлах проєкту обов'язково автоматично виконуй у терміналі:
+   git add . && git commit -m "Оновлення модулів тестування" && git push origin main
